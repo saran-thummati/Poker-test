@@ -5,13 +5,10 @@ import random
 VALUES = '23456789TJQKA'
 VAL_MAP = {v: i for i, v in enumerate(VALUES)}
 CHIP_COLORS = ["White", "Red", "Blue", "Green", "Black"]
-
-# Dictionary to map full words in the UI to letters for the math engine
 SUIT_MAP = {"Spades": "s", "Clubs": "c", "Hearts": "h", "Diamonds": "d"}
-INV_SUIT_MAP = {v: k for k, v in SUIT_MAP.items()} # Reverse for displaying later
+INV_SUIT_MAP = {v: k for k, v in SUIT_MAP.items()}
 
 def format_card(c):
-    """Turns 'As' into 'A of Spades' for the UI"""
     return f"{c[0]} of {INV_SUIT_MAP[c[1]]}"
 
 def evaluate_7_cards(cards):
@@ -57,22 +54,36 @@ def check_straight(unique_vals):
     if 12 in unique_vals and set([0,1,2,3]).issubset(set(unique_vals)): return 3
     return None
 
-def calculate_multiplayer_equity(hole_cards, community_cards, num_players, iterations=500):
-    deck = [v+s for v in VALUES for s in ['s', 'c', 'h', 'd']]
+def calculate_multiplayer_equity(hole_cards, community_cards, num_players, playstyle, iterations=500):
+    base_deck = [v+s for v in VALUES for s in ['s', 'c', 'h', 'd']]
     for c in hole_cards + community_cards:
-        if c in deck: deck.remove(c)
+        if c in base_deck: base_deck.remove(c)
             
     wins, ties = 0, 0
     for _ in range(iterations):
+        deck = base_deck.copy()
         random.shuffle(deck)
         rem_board_count = 5 - len(community_cards)
         sim_board = community_cards + deck[:rem_board_count]
         my_score = evaluate_7_cards(hole_cards + sim_board)
         
+        # Apply opponent range logic
+        avail_opp_cards = deck[rem_board_count:]
+        if playstyle == "Tight (Premium Hands only)":
+            # Force opponents to have face cards or aces
+            avail_opp_cards = [c for c in avail_opp_cards if c[0] in 'TJQKA']
+            if len(avail_opp_cards) < (num_players - 1) * 2: # Fallback if board eats too many high cards
+                avail_opp_cards = deck[rem_board_count:]
+        elif playstyle == "Standard (Average Range)":
+            avail_opp_cards = [c for c in avail_opp_cards if c[0] in '789TJQKA']
+            if len(avail_opp_cards) < (num_players - 1) * 2:
+                avail_opp_cards = deck[rem_board_count:]
+                
+        random.shuffle(avail_opp_cards)
         opp_scores = []
-        cards_dealt = rem_board_count
+        cards_dealt = 0
         for _ in range(num_players - 1):
-            opp_cards = deck[cards_dealt:cards_dealt+2]
+            opp_cards = avail_opp_cards[cards_dealt:cards_dealt+2]
             cards_dealt += 2
             opp_scores.append(evaluate_7_cards(opp_cards + sim_board))
             
@@ -88,6 +99,7 @@ if 'hole_cards' not in st.session_state: st.session_state.hole_cards = []
 if 'community_cards' not in st.session_state: st.session_state.community_cards = []
 if 'total_chips' not in st.session_state: st.session_state.total_chips = 0
 if 'num_players' not in st.session_state: st.session_state.num_players = 2
+if 'playstyle' not in st.session_state: st.session_state.playstyle = "Standard (Average Range)"
 if 'chip_values' not in st.session_state: st.session_state.chip_values = {}
 
 def next_phase(new_phase): st.session_state.phase = new_phase
@@ -96,8 +108,8 @@ def reset_hand():
     st.session_state.community_cards = []
 
 # --- UI LAYOUT ---
-st.set_page_config(page_title="Live Poker Assistant", layout="centered")
-st.title("♠️♥️ Live Poker Assistant ♦️♣️")
+st.set_page_config(page_title="Live Poker Assistant Pro", layout="centered")
+st.title("♠️♥️ Pro Poker Assistant ♦️♣️")
 
 # ==========================================
 # PHASE 1: GAME SETUP
@@ -124,16 +136,17 @@ if st.session_state.phase == 'SETUP':
     st.subheader("Table & Hand Details")
     c1, c2 = st.columns(2)
     with c1:
-        num_players = st.number_input("Total Players at Table (including you)", min_value=2, max_value=10, value=6)
+        num_players = st.number_input("Total Players at Table", min_value=2, max_value=10, value=6)
+        playstyle = st.selectbox("Opponent Playstyle", ["Loose (Plays anything)", "Standard (Average Range)", "Tight (Premium Hands only)"])
     with c2:
         st.write("Your Hole Cards")
         h1_val = st.selectbox("C1", list(VALUES), index=12, key="h1") 
         h1_suit = st.selectbox("Suit", list(SUIT_MAP.keys()), key="h1s", label_visibility="collapsed")
-        h1 = h1_val + SUIT_MAP[h1_suit] # Combine them secretly
+        h1 = h1_val + SUIT_MAP[h1_suit]
         
         h2_val = st.selectbox("C2", list(VALUES), index=11, key="h2") 
         h2_suit = st.selectbox("Suit", list(SUIT_MAP.keys()), key="h2s", label_visibility="collapsed")
-        h2 = h2_val + SUIT_MAP[h2_suit] # Combine them secretly
+        h2 = h2_val + SUIT_MAP[h2_suit]
     
     if st.button("Start Hand ➡️", type="primary"):
         if h1 == h2:
@@ -142,18 +155,18 @@ if st.session_state.phase == 'SETUP':
             st.session_state.chip_values = temp_chip_values 
             st.session_state.total_chips = chip_totals
             st.session_state.num_players = num_players
+            st.session_state.playstyle = playstyle
             st.session_state.hole_cards = [h1, h2]
-            next_phase('PRE_FLOP')
+            next_phase('PRE-FLOP')
             st.rerun()
 
 # ==========================================
 # PHASE 2-5: STREET CALCULATOR
 # ==========================================
-def render_street_ui(street_name, expected_community_count, next_step):
+def render_street_ui(street_name, expected_community_count, next_step, sim_iters):
     st.header(f"Current Phase: {street_name}")
-    st.write(f"**Your Stack:** {st.session_state.total_chips} | **Opponents:** {st.session_state.num_players - 1}")
+    st.write(f"**Your Stack:** {st.session_state.total_chips} | **Opponents:** {st.session_state.num_players - 1} ({st.session_state.playstyle})")
     
-    # Show formatted cards to the user
     formatted_hole = [format_card(c) for c in st.session_state.hole_cards]
     st.write(f"**Your Cards:** {formatted_hole[0]} | {formatted_hole[1]}")
     
@@ -162,37 +175,27 @@ def render_street_ui(street_name, expected_community_count, next_step):
         st.write(f"**Board:** {', '.join(formatted_board)}")
     st.markdown("---")
     
-    # Input new cards
     new_cards = []
     if street_name == 'FLOP':
         st.subheader("Enter the Flop")
         cc1, cc2, cc3 = st.columns(3)
         with cc1: 
-            f1_v = st.selectbox("F1", list(VALUES), key="f1") 
-            f1_s = st.selectbox("Suit", list(SUIT_MAP.keys()), key="f1s")
-            f1 = f1_v + SUIT_MAP[f1_s]
+            f1 = st.selectbox("F1", list(VALUES), key="f1") + SUIT_MAP[st.selectbox("Suit", list(SUIT_MAP.keys()), key="f1s")]
         with cc2: 
-            f2_v = st.selectbox("F2", list(VALUES), key="f2") 
-            f2_s = st.selectbox("Suit", list(SUIT_MAP.keys()), key="f2s")
-            f2 = f2_v + SUIT_MAP[f2_s]
+            f2 = st.selectbox("F2", list(VALUES), key="f2") + SUIT_MAP[st.selectbox("Suit", list(SUIT_MAP.keys()), key="f2s")]
         with cc3: 
-            f3_v = st.selectbox("F3", list(VALUES), key="f3") 
-            f3_s = st.selectbox("Suit", list(SUIT_MAP.keys()), key="f3s")
-            f3 = f3_v + SUIT_MAP[f3_s]
+            f3 = st.selectbox("F3", list(VALUES), key="f3") + SUIT_MAP[st.selectbox("Suit", list(SUIT_MAP.keys()), key="f3s")]
         new_cards = [f1, f2, f3]
     elif street_name == 'TURN':
         st.subheader("Enter the Turn")
-        t1_v = st.selectbox("Turn Card", list(VALUES), key="t1") 
-        t1_s = st.selectbox("Suit", list(SUIT_MAP.keys()), key="t1s")
-        new_cards = [t1_v + SUIT_MAP[t1_s]]
+        new_cards = [st.selectbox("Turn Card", list(VALUES), key="t1") + SUIT_MAP[st.selectbox("Suit", list(SUIT_MAP.keys()), key="t1s")]]
     elif street_name == 'RIVER':
         st.subheader("Enter the River")
-        r1_v = st.selectbox("River Card", list(VALUES), key="r1") 
-        r1_s = st.selectbox("Suit", list(SUIT_MAP.keys()), key="r1s")
-        new_cards = [r1_v + SUIT_MAP[r1_s]]
+        new_cards = [st.selectbox("River Card", list(VALUES), key="r1") + SUIT_MAP[st.selectbox("Suit", list(SUIT_MAP.keys()), key="r1s")]]
 
-    # Pot and Call Inputs
-    pot = st.number_input("Current Pot Size (Total in middle)", min_value=1, value=50, step=5)
+    c1, c2 = st.columns(2)
+    with c1: pot = st.number_input("Current Pot Size (Total in middle)", min_value=1, value=50, step=5)
+    with c2: implied_odds = st.number_input("Implied Future Winnings (Guess)", min_value=0, value=0, step=5)
     
     st.subheader("The Bet to You (Count the chips required to call)")
     call_cols = st.columns(5)
@@ -211,23 +214,33 @@ def render_street_ui(street_name, expected_community_count, next_step):
             st.error("Duplicate cards detected! Please make sure every card is unique.")
             return
 
-        with st.spinner("Calculating odds..."):
-            equity = calculate_multiplayer_equity(st.session_state.hole_cards, temp_board, st.session_state.num_players)
+        with st.spinner(f"Running {sim_iters} Monte Carlo simulations..."):
+            equity = calculate_multiplayer_equity(st.session_state.hole_cards, temp_board, st.session_state.num_players, st.session_state.playstyle, iterations=sim_iters)
+            
             actual_call = min(call_amt, st.session_state.total_chips)
             pot_odds = actual_call / (pot + actual_call) if (pot + actual_call) > 0 else 0
             
-            st.markdown("### Analysis")
-            m1, m2 = st.columns(2)
-            m1.metric("Win Probability", f"{equity * 100:.1f}%")
+            # Expected Value Math
+            ev = (equity * (pot + implied_odds)) - ((1 - equity) * actual_call)
+            
+            st.markdown("### Hand Analysis")
+            st.write("Win Probability")
+            st.progress(min(float(equity), 1.0))
+            
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Win %", f"{equity * 100:.1f}%")
             m2.metric("Pot Odds Target", f"{pot_odds * 100:.1f}%")
+            m3.metric("Expected Value (EV)", f"{ev:+.1f} Chips")
             
             if call_amt == 0:
-                st.success("🎯 **ACTION: CHECK** (Free card)")
-            elif equity > pot_odds:
-                if equity > 0.60: st.success("💥 **ACTION: RAISE** (Strong Advantage)")
-                else: st.success("✅ **ACTION: CALL** (Positive EV)")
+                st.success("🎯 **ACTION: CHECK** (It costs nothing to see the next card)")
+            elif ev > 0:
+                if ev > (pot * 0.5) and (st.session_state.total_chips / pot) < 3:
+                    st.success("💥 **ACTION: RAISE / ALL-IN** (Extremely Profitable Play)")
+                else:
+                    st.success(f"✅ **ACTION: CALL** (Mathematically profitable in the long run)")
             else:
-                st.error("❌ **ACTION: FOLD** (Math says let it go)")
+                st.error("❌ **ACTION: FOLD** (Negative EV. You will lose chips in the long run)")
 
     st.markdown("---")
     bc1, bc2 = st.columns(2)
@@ -247,7 +260,7 @@ def render_street_ui(street_name, expected_community_count, next_step):
                 st.rerun()
 
 # --- ROUTER ---
-if st.session_state.phase == 'PRE_FLOP': render_street_ui("PRE-FLOP", 0, 'FLOP')
-elif st.session_state.phase == 'FLOP': render_street_ui("FLOP", 3, 'TURN')
-elif st.session_state.phase == 'TURN': render_street_ui("TURN", 4, 'RIVER')
-elif st.session_state.phase == 'RIVER': render_street_ui("RIVER", 5, 'END')
+if st.session_state.phase == 'PRE-FLOP': render_street_ui("PRE-FLOP", 0, 'FLOP', sim_iters=2000)
+elif st.session_state.phase == 'FLOP': render_street_ui("FLOP", 3, 'TURN', sim_iters=1000)
+elif st.session_state.phase == 'TURN': render_street_ui("TURN", 4, 'RIVER', sim_iters=500)
+elif st.session_state.phase == 'RIVER': render_street_ui("RIVER", 5, 'END', sim_iters=100)
