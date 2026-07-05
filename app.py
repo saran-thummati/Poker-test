@@ -1,0 +1,234 @@
+import streamlit as st
+import random
+
+# --- POKER EVALUATION ENGINE (Pure Python) ---
+VALUES = '23456789TJQKA'
+VAL_MAP = {v: i for i, v in enumerate(VALUES)}
+
+def evaluate_7_cards(cards):
+    parsed = sorted([(VAL_MAP[c[0]], c[1]) for c in cards], reverse=True)
+    suits = [c[1] for c in parsed]
+    flush_suit = next((s for s in set(suits) if suits.count(s) >= 5), None)
+            
+    if flush_suit:
+        flush_cards = [c[0] for c in parsed if c[1] == flush_suit]
+        sf_score = check_straight(flush_cards)
+        if sf_score: return (8, sf_score)
+        return (5, flush_cards[:5])
+
+    vals = [c[0] for c in parsed]
+    counts = {v: vals.count(v) for v in set(vals)}
+    sorted_counts = sorted(counts.items(), key=lambda x: (x[1], x[0]), reverse=True)
+    straight_high = check_straight(list(set(vals)))
+
+    if sorted_counts[0][1] == 4:
+        kicker = max([v for v in vals if v != sorted_counts[0][0]])
+        return (7, (sorted_counts[0][0], kicker))
+    if sorted_counts[0][1] == 3 and len(sorted_counts) > 1 and sorted_counts[1][1] >= 2:
+        return (6, (sorted_counts[0][0], sorted_counts[1][0]))
+    if straight_high: return (4, straight_high)
+    if sorted_counts[0][1] == 3:
+        kickers = [v for v in vals if v != sorted_counts[0][0]][:2]
+        return (3, (sorted_counts[0][0], *kickers))
+    if sorted_counts[0][1] == 2 and len(sorted_counts) > 1 and sorted_counts[1][1] == 2:
+        kickers = [v for v in vals if v != sorted_counts[0][0] and v != sorted_counts[1][0]]
+        return (2, (sorted_counts[0][0], sorted_counts[1][0], kickers[0] if kickers else 0))
+    if sorted_counts[0][1] == 2:
+        kickers = [v for v in vals if v != sorted_counts[0][0]][:3]
+        return (1, (sorted_counts[0][0], *kickers))
+    return (0, vals[:5])
+
+def check_straight(unique_vals):
+    unique_vals = sorted(unique_vals, reverse=True)
+    if len(unique_vals) < 5:
+        if 12 in unique_vals and set([0,1,2,3]).issubset(set(unique_vals)): return 3 
+        return None
+    for i in range(len(unique_vals) - 4):
+        if unique_vals[i] - unique_vals[i+4] == 4: return unique_vals[i]
+    if 12 in unique_vals and set([0,1,2,3]).issubset(set(unique_vals)): return 3
+    return None
+
+def calculate_multiplayer_equity(hole_cards, community_cards, num_players, iterations=500):
+    """Simulates equity against multiple opponents."""
+    deck = [v+s for v in VALUES for s in ['s', 'c', 'h', 'd']]
+    for c in hole_cards + community_cards:
+        if c in deck: deck.remove(c)
+            
+    wins = 0
+    ties = 0
+    
+    for _ in range(iterations):
+        random.shuffle(deck)
+        rem_board_count = 5 - len(community_cards)
+        sim_board = community_cards + deck[:rem_board_count]
+        my_score = evaluate_7_cards(hole_cards + sim_board)
+        
+        opp_scores = []
+        cards_dealt = rem_board_count
+        for _ in range(num_players - 1):
+            opp_cards = deck[cards_dealt:cards_dealt+2]
+            cards_dealt += 2
+            opp_scores.append(evaluate_7_cards(opp_cards + sim_board))
+            
+        max_opp_score = max(opp_scores) if opp_scores else (0, [])
+        
+        if my_score > max_opp_score: wins += 1
+        elif my_score == max_opp_score: ties += 1
+            
+    return (wins + (ties / num_players)) / iterations
+
+# --- STREAMLIT STATE MANAGEMENT ---
+# This tells the app to remember where we are in the hand
+if 'phase' not in st.session_state:
+    st.session_state.phase = 'SETUP'
+if 'hole_cards' not in st.session_state:
+    st.session_state.hole_cards = []
+if 'community_cards' not in st.session_state:
+    st.session_state.community_cards = []
+if 'total_chips' not in st.session_state:
+    st.session_state.total_chips = 0
+if 'num_players' not in st.session_state:
+    st.session_state.num_players = 2
+
+def next_phase(new_phase):
+    st.session_state.phase = new_phase
+
+def reset_hand():
+    st.session_state.phase = 'SETUP'
+    st.session_state.community_cards = []
+
+# --- UI LAYOUT ---
+st.set_page_config(page_title="Live Poker Assistant", layout="centered")
+st.title("♠️♥️ Live Poker Assistant ♦️♣️")
+
+# ==========================================
+# PHASE 1: GAME SETUP (Chips & Hole Cards)
+# ==========================================
+if st.session_state.phase == 'SETUP':
+    st.header("1. Game Setup")
+    
+    st.subheader("Chip Inventory")
+    colors = ["White", "Red", "Blue", "Green", "Black"]
+    chip_totals = 0
+    
+    # Create 5 columns for the 5 chip colors
+    cols = st.columns(5)
+    for i, color in enumerate(colors):
+        with cols[i]:
+            st.markdown(f"**{color}**")
+            val = st.number_input(f"Value", min_value=1, value=[1, 5, 10, 25, 100][i], key=f"val_{color}")
+            count = st.number_input(f"Count", min_value=0, value=10, key=f"cnt_{color}")
+            chip_totals += (val * count)
+            
+    st.info(f"**Total Chip Stack:** {chip_totals}")
+    
+    st.markdown("---")
+    st.subheader("Table & Hand Details")
+    c1, c2 = st.columns(2)
+    with c1:
+        num_players = st.number_input("Total Players at Table (including you)", min_value=2, max_value=10, value=6)
+    with c2:
+        st.write("Your Hole Cards")
+        h1 = st.selectbox("C1", list(VALUES), index=12, key="h1") + st.selectbox("Suit", ['s', 'c', 'h', 'd'], key="h1s", label_visibility="collapsed")
+        h2 = st.selectbox("C2", list(VALUES), index=11, key="h2") + st.selectbox("Suit", ['s', 'c', 'h', 'd'], key="h2s", label_visibility="collapsed")
+    
+    if st.button("Start Hand ➡️", type="primary"):
+        if h1 == h2:
+            st.error("Cards must be unique!")
+        else:
+            st.session_state.total_chips = chip_totals
+            st.session_state.num_players = num_players
+            st.session_state.hole_cards = [h1, h2]
+            next_phase('PRE_FLOP')
+            st.rerun()
+
+# ==========================================
+# PHASE 2-5: STREET CALCULATOR UI (Helper)
+# ==========================================
+def render_street_ui(street_name, expected_community_count, next_step):
+    st.header(f"Current Phase: {street_name}")
+    st.write(f"**Your Stack:** {st.session_state.total_chips} chips | **Opponents:** {st.session_state.num_players - 1}")
+    st.write(f"**Your Cards:** {st.session_state.hole_cards[0]}, {st.session_state.hole_cards[1]}")
+    
+    if expected_community_count > 0:
+        st.write(f"**Board:** {', '.join(st.session_state.community_cards)}")
+
+    st.markdown("---")
+    
+    # Input new cards if needed
+    new_cards = []
+    if street_name == 'FLOP':
+        st.subheader("Enter the Flop")
+        cc1, cc2, cc3 = st.columns(3)
+        with cc1: f1 = st.selectbox("F1", list(VALUES), key="f1") + st.selectbox("S", ['s', 'c', 'h', 'd'], key="f1s")
+        with cc2: f2 = st.selectbox("F2", list(VALUES), key="f2") + st.selectbox("S", ['s', 'c', 'h', 'd'], key="f2s")
+        with cc3: f3 = st.selectbox("F3", list(VALUES), key="f3") + st.selectbox("S", ['s', 'c', 'h', 'd'], key="f3s")
+        new_cards = [f1, f2, f3]
+    elif street_name == 'TURN':
+        st.subheader("Enter the Turn")
+        t1 = st.selectbox("Turn Card", list(VALUES), key="t1") + st.selectbox("Suit", ['s', 'c', 'h', 'd'], key="t1s")
+        new_cards = [t1]
+    elif street_name == 'RIVER':
+        st.subheader("Enter the River")
+        r1 = st.selectbox("River Card", list(VALUES), key="r1") + st.selectbox("Suit", ['s', 'c', 'h', 'd'], key="r1s")
+        new_cards = [r1]
+
+    # Pot logic
+    c1, c2 = st.columns(2)
+    with c1: pot = st.number_input("Current Pot Size", min_value=1, value=50, step=5)
+    with c2: call_amt = st.number_input("Amount to Call", min_value=0, value=10, step=5)
+
+    if st.button("Calculate Move", type="primary"):
+        # Temporarily add new cards to test equity before officially saving them
+        temp_board = st.session_state.community_cards + new_cards
+        
+        all_cards = st.session_state.hole_cards + temp_board
+        if len(all_cards) != len(set(all_cards)):
+            st.error("Duplicate cards detected! Please fix.")
+            return
+
+        with st.spinner("Calculating odds..."):
+            equity = calculate_multiplayer_equity(st.session_state.hole_cards, temp_board, st.session_state.num_players)
+            actual_call = min(call_amt, st.session_state.total_chips)
+            pot_odds = actual_call / (pot + actual_call) if (pot + actual_call) > 0 else 0
+            
+            st.markdown("### Analysis")
+            m1, m2 = st.columns(2)
+            m1.metric("Win Probability", f"{equity * 100:.1f}%")
+            m2.metric("Pot Odds Target", f"{pot_odds * 100:.1f}%")
+            
+            if call_amt == 0:
+                st.success("🎯 **ACTION: CHECK** (Free card)")
+            elif equity > pot_odds:
+                if equity > 0.60: st.success("💥 **ACTION: RAISE** (Strong Advantage)")
+                else: st.success("✅ **ACTION: CALL** (Positive EV)")
+            else:
+                st.error("❌ **ACTION: FOLD** (Math says let it go)")
+
+    st.markdown("---")
+    st.write("What happened?")
+    bc1, bc2 = st.columns(2)
+    with bc1:
+        if st.button("I Folded (End Hand)", type="secondary", use_container_width=True):
+            reset_hand()
+            st.rerun()
+    with bc2:
+        if next_step == 'END':
+            if st.button("Showdown! (Start New Hand)", type="primary", use_container_width=True):
+                reset_hand()
+                st.rerun()
+        else:
+            if st.button("I stayed in ➡️ Next Street", type="primary", use_container_width=True):
+                st.session_state.community_cards.extend(new_cards)
+                next_phase(next_step)
+                st.rerun()
+
+# --- ROUTER ---
+if st.session_state.phase == 'PRE_FLOP':
+    render_street_ui("PRE-FLOP", 0, 'FLOP')
+elif st.session_state.phase == 'FLOP':
+    render_street_ui("FLOP", 3, 'TURN')
+elif st.session_state.phase == 'TURN':
+    render_street_ui("TURN", 4, 'RIVER')
+elif st.session_state.phase == 'RIVER':
+    render_street_ui("RIVER", 5, 'END')
