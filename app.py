@@ -1,9 +1,10 @@
 import streamlit as st
 import random
 
-# --- POKER EVALUATION ENGINE (Pure Python) ---
+# --- GLOBALS & POKER ENGINE ---
 VALUES = '23456789TJQKA'
 VAL_MAP = {v: i for i, v in enumerate(VALUES)}
+CHIP_COLORS = ["White", "Red", "Blue", "Green", "Black"]
 
 def evaluate_7_cards(cards):
     parsed = sorted([(VAL_MAP[c[0]], c[1]) for c in cards], reverse=True)
@@ -49,14 +50,11 @@ def check_straight(unique_vals):
     return None
 
 def calculate_multiplayer_equity(hole_cards, community_cards, num_players, iterations=500):
-    """Simulates equity against multiple opponents."""
     deck = [v+s for v in VALUES for s in ['s', 'c', 'h', 'd']]
     for c in hole_cards + community_cards:
         if c in deck: deck.remove(c)
             
-    wins = 0
-    ties = 0
-    
+    wins, ties = 0, 0
     for _ in range(iterations):
         random.shuffle(deck)
         rem_board_count = 5 - len(community_cards)
@@ -71,28 +69,20 @@ def calculate_multiplayer_equity(hole_cards, community_cards, num_players, itera
             opp_scores.append(evaluate_7_cards(opp_cards + sim_board))
             
         max_opp_score = max(opp_scores) if opp_scores else (0, [])
-        
         if my_score > max_opp_score: wins += 1
         elif my_score == max_opp_score: ties += 1
             
     return (wins + (ties / num_players)) / iterations
 
-# --- STREAMLIT STATE MANAGEMENT ---
-# This tells the app to remember where we are in the hand
-if 'phase' not in st.session_state:
-    st.session_state.phase = 'SETUP'
-if 'hole_cards' not in st.session_state:
-    st.session_state.hole_cards = []
-if 'community_cards' not in st.session_state:
-    st.session_state.community_cards = []
-if 'total_chips' not in st.session_state:
-    st.session_state.total_chips = 0
-if 'num_players' not in st.session_state:
-    st.session_state.num_players = 2
+# --- STATE MANAGEMENT ---
+if 'phase' not in st.session_state: st.session_state.phase = 'SETUP'
+if 'hole_cards' not in st.session_state: st.session_state.hole_cards = []
+if 'community_cards' not in st.session_state: st.session_state.community_cards = []
+if 'total_chips' not in st.session_state: st.session_state.total_chips = 0
+if 'num_players' not in st.session_state: st.session_state.num_players = 2
+if 'chip_values' not in st.session_state: st.session_state.chip_values = {}
 
-def next_phase(new_phase):
-    st.session_state.phase = new_phase
-
+def next_phase(new_phase): st.session_state.phase = new_phase
 def reset_hand():
     st.session_state.phase = 'SETUP'
     st.session_state.community_cards = []
@@ -102,27 +92,27 @@ st.set_page_config(page_title="Live Poker Assistant", layout="centered")
 st.title("♠️♥️ Live Poker Assistant ♦️♣️")
 
 # ==========================================
-# PHASE 1: GAME SETUP (Chips & Hole Cards)
+# PHASE 1: GAME SETUP
 # ==========================================
 if st.session_state.phase == 'SETUP':
     st.header("1. Game Setup")
+    st.subheader("Your Chip Inventory")
     
-    st.subheader("Chip Inventory")
-    colors = ["White", "Red", "Blue", "Green", "Black"]
     chip_totals = 0
-    
-    # Create 5 columns for the 5 chip colors
+    temp_chip_values = {}
     cols = st.columns(5)
-    for i, color in enumerate(colors):
+    
+    for i, color in enumerate(CHIP_COLORS):
         with cols[i]:
             st.markdown(f"**{color}**")
             val = st.number_input(f"Value", min_value=1, value=[1, 5, 10, 25, 100][i], key=f"val_{color}")
             count = st.number_input(f"Count", min_value=0, value=10, key=f"cnt_{color}")
+            temp_chip_values[color] = val
             chip_totals += (val * count)
             
-    st.info(f"**Total Chip Stack:** {chip_totals}")
-    
+    st.info(f"**Your Total Stack Value:** {chip_totals}")
     st.markdown("---")
+    
     st.subheader("Table & Hand Details")
     c1, c2 = st.columns(2)
     with c1:
@@ -136,6 +126,7 @@ if st.session_state.phase == 'SETUP':
         if h1 == h2:
             st.error("Cards must be unique!")
         else:
+            st.session_state.chip_values = temp_chip_values # Save values for later
             st.session_state.total_chips = chip_totals
             st.session_state.num_players = num_players
             st.session_state.hole_cards = [h1, h2]
@@ -143,19 +134,17 @@ if st.session_state.phase == 'SETUP':
             st.rerun()
 
 # ==========================================
-# PHASE 2-5: STREET CALCULATOR UI (Helper)
+# PHASE 2-5: STREET CALCULATOR
 # ==========================================
 def render_street_ui(street_name, expected_community_count, next_step):
     st.header(f"Current Phase: {street_name}")
-    st.write(f"**Your Stack:** {st.session_state.total_chips} chips | **Opponents:** {st.session_state.num_players - 1}")
+    st.write(f"**Your Stack:** {st.session_state.total_chips} | **Opponents:** {st.session_state.num_players - 1}")
     st.write(f"**Your Cards:** {st.session_state.hole_cards[0]}, {st.session_state.hole_cards[1]}")
-    
     if expected_community_count > 0:
         st.write(f"**Board:** {', '.join(st.session_state.community_cards)}")
-
     st.markdown("---")
     
-    # Input new cards if needed
+    # Input new cards
     new_cards = []
     if street_name == 'FLOP':
         st.subheader("Enter the Flop")
@@ -173,15 +162,21 @@ def render_street_ui(street_name, expected_community_count, next_step):
         r1 = st.selectbox("River Card", list(VALUES), key="r1") + st.selectbox("Suit", ['s', 'c', 'h', 'd'], key="r1s")
         new_cards = [r1]
 
-    # Pot logic
-    c1, c2 = st.columns(2)
-    with c1: pot = st.number_input("Current Pot Size", min_value=1, value=50, step=5)
-    with c2: call_amt = st.number_input("Amount to Call", min_value=0, value=10, step=5)
+    # Pot and Call Inputs
+    pot = st.number_input("Current Pot Size (Total in middle)", min_value=1, value=50, step=5)
+    
+    st.subheader("The Bet to You (Count the chips required to call)")
+    call_cols = st.columns(5)
+    call_amt = 0
+    for i, color in enumerate(CHIP_COLORS):
+        with call_cols[i]:
+            count = st.number_input(color, min_value=0, value=0, key=f"call_{color}_{street_name}")
+            call_amt += (count * st.session_state.chip_values[color])
+            
+    st.info(f"**Total Call Value:** {call_amt}")
 
     if st.button("Calculate Move", type="primary"):
-        # Temporarily add new cards to test equity before officially saving them
         temp_board = st.session_state.community_cards + new_cards
-        
         all_cards = st.session_state.hole_cards + temp_board
         if len(all_cards) != len(set(all_cards)):
             st.error("Duplicate cards detected! Please fix.")
@@ -206,7 +201,6 @@ def render_street_ui(street_name, expected_community_count, next_step):
                 st.error("❌ **ACTION: FOLD** (Math says let it go)")
 
     st.markdown("---")
-    st.write("What happened?")
     bc1, bc2 = st.columns(2)
     with bc1:
         if st.button("I Folded (End Hand)", type="secondary", use_container_width=True):
@@ -224,11 +218,7 @@ def render_street_ui(street_name, expected_community_count, next_step):
                 st.rerun()
 
 # --- ROUTER ---
-if st.session_state.phase == 'PRE_FLOP':
-    render_street_ui("PRE-FLOP", 0, 'FLOP')
-elif st.session_state.phase == 'FLOP':
-    render_street_ui("FLOP", 3, 'TURN')
-elif st.session_state.phase == 'TURN':
-    render_street_ui("TURN", 4, 'RIVER')
-elif st.session_state.phase == 'RIVER':
-    render_street_ui("RIVER", 5, 'END')
+if st.session_state.phase == 'PRE_FLOP': render_street_ui("PRE-FLOP", 0, 'FLOP')
+elif st.session_state.phase == 'FLOP': render_street_ui("FLOP", 3, 'TURN')
+elif st.session_state.phase == 'TURN': render_street_ui("TURN", 4, 'RIVER')
+elif st.session_state.phase == 'RIVER': render_street_ui("RIVER", 5, 'END')
