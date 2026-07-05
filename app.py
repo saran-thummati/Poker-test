@@ -67,17 +67,13 @@ def calculate_multiplayer_equity(hole_cards, community_cards, num_players, plays
         sim_board = community_cards + deck[:rem_board_count]
         my_score = evaluate_7_cards(hole_cards + sim_board)
         
-        # Apply opponent range logic
         avail_opp_cards = deck[rem_board_count:]
         if playstyle == "Tight (Premium Hands only)":
-            # Force opponents to have face cards or aces
             avail_opp_cards = [c for c in avail_opp_cards if c[0] in 'TJQKA']
-            if len(avail_opp_cards) < (num_players - 1) * 2: # Fallback if board eats too many high cards
-                avail_opp_cards = deck[rem_board_count:]
+            if len(avail_opp_cards) < (num_players - 1) * 2: avail_opp_cards = deck[rem_board_count:]
         elif playstyle == "Standard (Average Range)":
             avail_opp_cards = [c for c in avail_opp_cards if c[0] in '789TJQKA']
-            if len(avail_opp_cards) < (num_players - 1) * 2:
-                avail_opp_cards = deck[rem_board_count:]
+            if len(avail_opp_cards) < (num_players - 1) * 2: avail_opp_cards = deck[rem_board_count:]
                 
         random.shuffle(avail_opp_cards)
         opp_scores = []
@@ -93,6 +89,43 @@ def calculate_multiplayer_equity(hole_cards, community_cards, num_players, plays
             
     return (wins + (ties / num_players)) / iterations
 
+def track_outs(hole_cards, community_cards):
+    """Calculates active drawing outs for straight or flush draws on the Flop/Turn."""
+    if len(community_cards) not in [3, 4]:
+        return None, 0
+        
+    known_cards = hole_cards + community_cards
+    full_deck = [v+s for v in VALUES for s in ['s', 'c', 'h', 'd']]
+    remaining_deck = [c for c in full_deck if c not in known_cards]
+    
+    current_score = evaluate_7_cards(known_cards)
+    
+    # We only care about drawing if we don't already have a monster hand (Full House or better)
+    if current_score[0] >= 6:
+        return None, 0
+        
+    flush_outs = 0
+    straight_outs = 0
+    
+    # Test every remaining card in the deck to see if it gives us a Flush or Straight
+    for sim_card in remaining_deck:
+        test_hand = known_cards + [sim_card]
+        test_score = evaluate_7_cards(test_hand)
+        
+        if test_score[0] == 5 and current_score[0] < 5:
+            flush_outs += 1
+        elif test_score[0] == 4 and current_score[0] < 4:
+            straight_outs += 1
+            
+    if flush_outs >= 8:
+        return "Flush Draw", flush_outs
+    if straight_outs >= 4:
+        return "Straight Draw", straight_outs
+    if flush_outs > 0 and straight_outs > 0:
+        return "Combo Draw", (flush_outs + straight_outs)
+        
+    return "No Major Draw", 0
+
 # --- STATE MANAGEMENT ---
 if 'phase' not in st.session_state: st.session_state.phase = 'SETUP'
 if 'hole_cards' not in st.session_state: st.session_state.hole_cards = []
@@ -100,6 +133,7 @@ if 'community_cards' not in st.session_state: st.session_state.community_cards =
 if 'total_chips' not in st.session_state: st.session_state.total_chips = 0
 if 'num_players' not in st.session_state: st.session_state.num_players = 2
 if 'playstyle' not in st.session_state: st.session_state.playstyle = "Standard (Average Range)"
+if 'position' not in st.session_state: st.session_state.position = "Middle Position"
 if 'chip_values' not in st.session_state: st.session_state.chip_values = {}
 
 def next_phase(new_phase): st.session_state.phase = new_phase
@@ -138,6 +172,7 @@ if st.session_state.phase == 'SETUP':
     with c1:
         num_players = st.number_input("Total Players at Table", min_value=2, max_value=10, value=6)
         playstyle = st.selectbox("Opponent Playstyle", ["Loose (Plays anything)", "Standard (Average Range)", "Tight (Premium Hands only)"])
+        position = st.selectbox("Your Table Position", ["Early Position (Disadvantage)", "Middle Position", "Late Position / Button (Advantage)"])
     with c2:
         st.write("Your Hole Cards")
         h1_val = st.selectbox("C1", list(VALUES), index=12, key="h1") 
@@ -156,6 +191,7 @@ if st.session_state.phase == 'SETUP':
             st.session_state.total_chips = chip_totals
             st.session_state.num_players = num_players
             st.session_state.playstyle = playstyle
+            st.session_state.position = position
             st.session_state.hole_cards = [h1, h2]
             next_phase('PRE-FLOP')
             st.rerun()
@@ -165,7 +201,7 @@ if st.session_state.phase == 'SETUP':
 # ==========================================
 def render_street_ui(street_name, expected_community_count, next_step, sim_iters):
     st.header(f"Current Phase: {street_name}")
-    st.write(f"**Your Stack:** {st.session_state.total_chips} | **Opponents:** {st.session_state.num_players - 1} ({st.session_state.playstyle})")
+    st.write(f"**Your Stack:** {st.session_state.total_chips} | **Opponents:** {st.session_state.num_players - 1} ({st.session_state.playstyle}) | **Pos:** {st.session_state.position}")
     
     formatted_hole = [format_card(c) for c in st.session_state.hole_cards]
     st.write(f"**Your Cards:** {formatted_hole[0]} | {formatted_hole[1]}")
@@ -179,12 +215,9 @@ def render_street_ui(street_name, expected_community_count, next_step, sim_iters
     if street_name == 'FLOP':
         st.subheader("Enter the Flop")
         cc1, cc2, cc3 = st.columns(3)
-        with cc1: 
-            f1 = st.selectbox("F1", list(VALUES), key="f1") + SUIT_MAP[st.selectbox("Suit", list(SUIT_MAP.keys()), key="f1s")]
-        with cc2: 
-            f2 = st.selectbox("F2", list(VALUES), key="f2") + SUIT_MAP[st.selectbox("Suit", list(SUIT_MAP.keys()), key="f2s")]
-        with cc3: 
-            f3 = st.selectbox("F3", list(VALUES), key="f3") + SUIT_MAP[st.selectbox("Suit", list(SUIT_MAP.keys()), key="f3s")]
+        with cc1: f1 = st.selectbox("F1", list(VALUES), key="f1") + SUIT_MAP[st.selectbox("Suit", list(SUIT_MAP.keys()), key="f1s")]
+        with cc2: f2 = st.selectbox("F2", list(VALUES), key="f2") + SUIT_MAP[st.selectbox("Suit", list(SUIT_MAP.keys()), key="f2s")]
+        with cc3: f3 = st.selectbox("F3", list(VALUES), key="f3") + SUIT_MAP[st.selectbox("Suit", list(SUIT_MAP.keys()), key="f3s")]
         new_cards = [f1, f2, f3]
     elif street_name == 'TURN':
         st.subheader("Enter the Turn")
@@ -193,6 +226,7 @@ def render_street_ui(street_name, expected_community_count, next_step, sim_iters
         st.subheader("Enter the River")
         new_cards = [st.selectbox("River Card", list(VALUES), key="r1") + SUIT_MAP[st.selectbox("Suit", list(SUIT_MAP.keys()), key="r1s")]]
 
+    # Pot and Call Inputs
     c1, c2 = st.columns(2)
     with c1: pot = st.number_input("Current Pot Size (Total in middle)", min_value=1, value=50, step=5)
     with c2: implied_odds = st.number_input("Implied Future Winnings (Guess)", min_value=0, value=0, step=5)
@@ -220,7 +254,13 @@ def render_street_ui(street_name, expected_community_count, next_step, sim_iters
             actual_call = min(call_amt, st.session_state.total_chips)
             pot_odds = actual_call / (pot + actual_call) if (pot + actual_call) > 0 else 0
             
-            # Expected Value Math
+            # Positional Strategy Multiplier
+            pos_buffer = 0.0
+            if st.session_state.position == "Late Position / Button (Advantage)":
+                pos_buffer = 0.04 # Can loosen up call requirements by 4% due to position
+            elif st.session_state.position == "Early Position (Disadvantage)":
+                pos_buffer = -0.03 # Must be 3% stricter when acting first
+                
             ev = (equity * (pot + implied_odds)) - ((1 - equity) * actual_call)
             
             st.markdown("### Hand Analysis")
@@ -232,15 +272,24 @@ def render_street_ui(street_name, expected_community_count, next_step, sim_iters
             m2.metric("Pot Odds Target", f"{pot_odds * 100:.1f}%")
             m3.metric("Expected Value (EV)", f"{ev:+.1f} Chips")
             
+            # Display Draw Tracking if Flop or Turn
+            if street_name in ['FLOP', 'TURN']:
+                draw_type, outs = track_outs(st.session_state.hole_cards, temp_board)
+                if outs > 0:
+                    st.info(f"🔮 **Draw Detected:** {draw_type} with **{outs} Outs** remaining in the deck.")
+            
+            # Decision Engine incorporating Position
             if call_amt == 0:
                 st.success("🎯 **ACTION: CHECK** (It costs nothing to see the next card)")
-            elif ev > 0:
-                if ev > (pot * 0.5) and (st.session_state.total_chips / pot) < 3:
+            elif ev > 0 or (equity + pos_buffer) > pot_odds:
+                if ev > (pot * 0.4) and (st.session_state.total_chips / pot) < 3:
                     st.success("💥 **ACTION: RAISE / ALL-IN** (Extremely Profitable Play)")
+                elif ev < 0 and (equity + pos_buffer) > pot_odds:
+                    st.success(f"✅ **ACTION: CALL** (Backed by Positional Tactical Advantage)")
                 else:
                     st.success(f"✅ **ACTION: CALL** (Mathematically profitable in the long run)")
             else:
-                st.error("❌ **ACTION: FOLD** (Negative EV. You will lose chips in the long run)")
+                st.error("❌ **ACTION: FOLD** (Negative EV. Position cannot save this hand)")
 
     st.markdown("---")
     bc1, bc2 = st.columns(2)
