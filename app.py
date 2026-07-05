@@ -6,6 +6,14 @@ VALUES = '23456789TJQKA'
 VAL_MAP = {v: i for i, v in enumerate(VALUES)}
 CHIP_COLORS = ["White", "Red", "Blue", "Green", "Black"]
 
+# Dictionary to map full words in the UI to letters for the math engine
+SUIT_MAP = {"Spades": "s", "Clubs": "c", "Hearts": "h", "Diamonds": "d"}
+INV_SUIT_MAP = {v: k for k, v in SUIT_MAP.items()} # Reverse for displaying later
+
+def format_card(c):
+    """Turns 'As' into 'A of Spades' for the UI"""
+    return f"{c[0]} of {INV_SUIT_MAP[c[1]]}"
+
 def evaluate_7_cards(cards):
     parsed = sorted([(VAL_MAP[c[0]], c[1]) for c in cards], reverse=True)
     suits = [c[1] for c in parsed]
@@ -119,14 +127,19 @@ if st.session_state.phase == 'SETUP':
         num_players = st.number_input("Total Players at Table (including you)", min_value=2, max_value=10, value=6)
     with c2:
         st.write("Your Hole Cards")
-        h1 = st.selectbox("C1", list(VALUES), index=12, key="h1") + st.selectbox("Suit", ['s', 'c', 'h', 'd'], key="h1s", label_visibility="collapsed")
-        h2 = st.selectbox("C2", list(VALUES), index=11, key="h2") + st.selectbox("Suit", ['s', 'c', 'h', 'd'], key="h2s", label_visibility="collapsed")
+        h1_val = st.selectbox("C1", list(VALUES), index=12, key="h1") 
+        h1_suit = st.selectbox("Suit", list(SUIT_MAP.keys()), key="h1s", label_visibility="collapsed")
+        h1 = h1_val + SUIT_MAP[h1_suit] # Combine them secretly
+        
+        h2_val = st.selectbox("C2", list(VALUES), index=11, key="h2") 
+        h2_suit = st.selectbox("Suit", list(SUIT_MAP.keys()), key="h2s", label_visibility="collapsed")
+        h2 = h2_val + SUIT_MAP[h2_suit] # Combine them secretly
     
     if st.button("Start Hand ➡️", type="primary"):
         if h1 == h2:
             st.error("Cards must be unique!")
         else:
-            st.session_state.chip_values = temp_chip_values # Save values for later
+            st.session_state.chip_values = temp_chip_values 
             st.session_state.total_chips = chip_totals
             st.session_state.num_players = num_players
             st.session_state.hole_cards = [h1, h2]
@@ -139,9 +152,14 @@ if st.session_state.phase == 'SETUP':
 def render_street_ui(street_name, expected_community_count, next_step):
     st.header(f"Current Phase: {street_name}")
     st.write(f"**Your Stack:** {st.session_state.total_chips} | **Opponents:** {st.session_state.num_players - 1}")
-    st.write(f"**Your Cards:** {st.session_state.hole_cards[0]}, {st.session_state.hole_cards[1]}")
+    
+    # Show formatted cards to the user
+    formatted_hole = [format_card(c) for c in st.session_state.hole_cards]
+    st.write(f"**Your Cards:** {formatted_hole[0]} | {formatted_hole[1]}")
+    
     if expected_community_count > 0:
-        st.write(f"**Board:** {', '.join(st.session_state.community_cards)}")
+        formatted_board = [format_card(c) for c in st.session_state.community_cards]
+        st.write(f"**Board:** {', '.join(formatted_board)}")
     st.markdown("---")
     
     # Input new cards
@@ -149,18 +167,29 @@ def render_street_ui(street_name, expected_community_count, next_step):
     if street_name == 'FLOP':
         st.subheader("Enter the Flop")
         cc1, cc2, cc3 = st.columns(3)
-        with cc1: f1 = st.selectbox("F1", list(VALUES), key="f1") + st.selectbox("S", ['s', 'c', 'h', 'd'], key="f1s")
-        with cc2: f2 = st.selectbox("F2", list(VALUES), key="f2") + st.selectbox("S", ['s', 'c', 'h', 'd'], key="f2s")
-        with cc3: f3 = st.selectbox("F3", list(VALUES), key="f3") + st.selectbox("S", ['s', 'c', 'h', 'd'], key="f3s")
+        with cc1: 
+            f1_v = st.selectbox("F1", list(VALUES), key="f1") 
+            f1_s = st.selectbox("Suit", list(SUIT_MAP.keys()), key="f1s")
+            f1 = f1_v + SUIT_MAP[f1_s]
+        with cc2: 
+            f2_v = st.selectbox("F2", list(VALUES), key="f2") 
+            f2_s = st.selectbox("Suit", list(SUIT_MAP.keys()), key="f2s")
+            f2 = f2_v + SUIT_MAP[f2_s]
+        with cc3: 
+            f3_v = st.selectbox("F3", list(VALUES), key="f3") 
+            f3_s = st.selectbox("Suit", list(SUIT_MAP.keys()), key="f3s")
+            f3 = f3_v + SUIT_MAP[f3_s]
         new_cards = [f1, f2, f3]
     elif street_name == 'TURN':
         st.subheader("Enter the Turn")
-        t1 = st.selectbox("Turn Card", list(VALUES), key="t1") + st.selectbox("Suit", ['s', 'c', 'h', 'd'], key="t1s")
-        new_cards = [t1]
+        t1_v = st.selectbox("Turn Card", list(VALUES), key="t1") 
+        t1_s = st.selectbox("Suit", list(SUIT_MAP.keys()), key="t1s")
+        new_cards = [t1_v + SUIT_MAP[t1_s]]
     elif street_name == 'RIVER':
         st.subheader("Enter the River")
-        r1 = st.selectbox("River Card", list(VALUES), key="r1") + st.selectbox("Suit", ['s', 'c', 'h', 'd'], key="r1s")
-        new_cards = [r1]
+        r1_v = st.selectbox("River Card", list(VALUES), key="r1") 
+        r1_s = st.selectbox("Suit", list(SUIT_MAP.keys()), key="r1s")
+        new_cards = [r1_v + SUIT_MAP[r1_s]]
 
     # Pot and Call Inputs
     pot = st.number_input("Current Pot Size (Total in middle)", min_value=1, value=50, step=5)
@@ -179,7 +208,7 @@ def render_street_ui(street_name, expected_community_count, next_step):
         temp_board = st.session_state.community_cards + new_cards
         all_cards = st.session_state.hole_cards + temp_board
         if len(all_cards) != len(set(all_cards)):
-            st.error("Duplicate cards detected! Please fix.")
+            st.error("Duplicate cards detected! Please make sure every card is unique.")
             return
 
         with st.spinner("Calculating odds..."):
